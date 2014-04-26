@@ -3,49 +3,52 @@
  * The entry points are:
  *   do_noquantum:        Called on behalf of process' that run out of quantum
  *   do_start_scheduling  Request to start scheduling a proc
- *   do_stop_scheduling   Request to stop scheduling a proc
- *   do_nice		  Request to change the nice level on a proc
- *   init_scheduling      Called from main.c to set up/prepare scheduling
- */
-#include "sched.h"
-#include "schedproc.h"
-#include <assert.h>
-#include <minix/com.h>
-#include <machine/archtypes.h>
-#include "kernel/proc.h" /* for queue constants */
+	 *   do_stop_scheduling   Request to stop scheduling a proc
+	 *   do_nice		  Request to change the nice level on a proc
+	 *   init_scheduling      Called from main.c to set up/prepare scheduling
+	 */
+	#include "sched.h"
+	#include "schedproc.h"
+	#include <assert.h>
+	 #include <minix/syslib.h>
+	#include <minix/com.h>
+	#include <stdlib.h>
+	#include <machine/archtypes.h>
+	#include "kernel/proc.h" /* for queue constants */
 
-static timer_t sched_timer;
-static unsigned balance_timeout;
+	static timer_t sched_timer;
+	static unsigned balance_timeout;
+	static unsigned totalTickets= 0;
 
-#define BALANCE_TIMEOUT	5 /* how often to balance queues in seconds */
+	#define BALANCE_TIMEOUT	5 /* how often to balance queues in seconds */
 
-static int schedule_process(struct schedproc * rmp, unsigned flags);
-static void balance_queues(struct timer *tp);
+	static int schedule_process(struct schedproc * rmp, unsigned flags);
+	static void balance_queues(struct timer *tp);
 
-#define SCHEDULE_CHANGE_PRIO	0x1
-#define SCHEDULE_CHANGE_QUANTUM	0x2
-#define SCHEDULE_CHANGE_CPU	0x4
+	#define SCHEDULE_CHANGE_PRIO	0x1
+	#define SCHEDULE_CHANGE_QUANTUM	0x2
+	#define SCHEDULE_CHANGE_CPU	0x4
 
-#define SCHEDULE_CHANGE_ALL	(	\
-		SCHEDULE_CHANGE_PRIO	|	\
-		SCHEDULE_CHANGE_QUANTUM	|	\
-		SCHEDULE_CHANGE_CPU		\
-		)
+	#define SCHEDULE_CHANGE_ALL	(	\
+			SCHEDULE_CHANGE_PRIO	|	\
+			SCHEDULE_CHANGE_QUANTUM	|	\
+			SCHEDULE_CHANGE_CPU		\
+			)
 
-#define schedule_process_local(p)	\
-	schedule_process(p, SCHEDULE_CHANGE_PRIO | SCHEDULE_CHANGE_QUANTUM)
-#define schedule_process_migrate(p)	\
-	schedule_process(p, SCHEDULE_CHANGE_CPU)
+	#define schedule_process_local(p)	\
+		schedule_process(p, SCHEDULE_CHANGE_PRIO | SCHEDULE_CHANGE_QUANTUM)
+	#define schedule_process_migrate(p)	\
+		schedule_process(p, SCHEDULE_CHANGE_CPU)
 
-#define CPU_DEAD	-1
+	#define CPU_DEAD	-1
 
-#define cpu_is_available(c)	(cpu_proc[c] >= 0)
+	#define cpu_is_available(c)	(cpu_proc[c] >= 0)
 
-#define DEFAULT_USER_TIME_SLICE 200
+	#define DEFAULT_USER_TIME_SLICE 200
 
 /* processes created by RS are sysytem processes */
 #define is_system_proc(p)	((p)->parent == RS_PROC_NR)
-
+#define is_user_proc(p)	((p)->parent != RS_PROC_NR)
 static unsigned cpu_proc[CONFIG_MAX_CPUS];
 
 static void pick_cpu(struct schedproc * proc)
@@ -90,7 +93,7 @@ static void pick_cpu(struct schedproc * proc)
 int do_noquantum(message *m_ptr)
 {
 	register struct schedproc *rmp;
-	int rv, proc_nr_n;
+	int rv, proc_nr_n, n;
 
 	if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
 		printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
@@ -99,13 +102,32 @@ int do_noquantum(message *m_ptr)
 	}
 
 	rmp = &schedproc[proc_nr_n];
-	if (rmp->priority < MIN_USER_Q) {
-		rmp->priority += 1; /* lower priority */
-	}
 
-	if ((rv = schedule_process_local(rmp)) != OK) {
-		return rv;
+////edit
+	//if user process, put in USER_Q
+	if(is_user_proc(rmp)){
+		if ((rv = schedule_process_local(rmp)) != OK) {
+			return rv;
+		}
+    for (n=0, rmp=schedproc; n< NR_PROCS; n++, rmp++) {
+           if (is_system_proc(rmp) || !(rmp->flags & IN_USE))
+           		 continue;
+           // Lower priority
+           if (rmp->priority < MIN_USER_Q) rmp->priority++;
+           		laschedule_process_local(rmp);
 	}
+	do_lottery();
+}
+
+	//if system process
+ 	else if (is_system_proc(rmp) && rmp->priority < MIN_USER_Q) {
+		if (rmp->priority < MIN_USER_Q) {
+			rmp->priority += 1; /* lower priority */
+		}
+		if ((rv = schedule_process_local(rmp)) != OK) {
+			return rv;
+		}
+	}	
 	return OK;
 }
 
@@ -127,12 +149,16 @@ int do_stop_scheduling(message *m_ptr)
 		return EBADEPT;
 	}
 
+
 	rmp = &schedproc[proc_nr_n];
+	if(is_user_proc(rmp)){
+		totalTickets -= rmp->tickets;
+		do_lottery();
+	}
 #ifdef CONFIG_SMP
 	cpu_proc[rmp->cpu]--;
 #endif
 	rmp->flags = 0; /*&= ~IN_USE;*/
-
 	return OK;
 }
 
@@ -160,12 +186,22 @@ int do_start_scheduling(message *m_ptr)
 	rmp = &schedproc[proc_nr_n];
 
 	/* Populate process slot */
+
 	rmp->endpoint     = m_ptr->SCHEDULING_ENDPOINT;
 	rmp->parent       = m_ptr->SCHEDULING_PARENT;
-	rmp->max_priority = (unsigned) m_ptr->SCHEDULING_MAXPRIO;
-	if (rmp->max_priority >= NR_SCHED_QUEUES) {
-		return EINVAL;
+
+	if(is_system_proc(rmp)){
+		rmp->max_priority = (unsigned) m_ptr->SCHEDULING_MAXPRIO;
 	}
+	
+
+	 if (is_user_proc(rmp)) {
+        rmp->tickets      = 5;
+        totalTickets      += rmp->tickets;
+        rmp->priority     = USER_Q;
+        rmp->max_priority = MAX_USER_Q;
+    }
+
 
 	/* Inherit current priority and time slice from parent. Since there
 	 * is currently only one scheduler scheduling the whole system, this
@@ -272,24 +308,35 @@ int do_nice(message *m_ptr)
 
 	rmp = &schedproc[proc_nr_n];
 	new_q = (unsigned) m_ptr->SCHEDULING_MAXPRIO;
-	if (new_q >= NR_SCHED_QUEUES) {
-		return EINVAL;
-	}
 
+   if (is_user_proc(rmp)) {
+       if (new_q < 1 || new_q > 100) {
+           return EINVAL;
+       }
+        totalTickets += new_q - rmp->tickets;
+        rmp->tickets   = new_q;
+        rmp->priority = USER_Q;
+        return OK;
+    }
 	/* Store old values, in case we need to roll back the changes */
-	old_q     = rmp->priority;
-	old_max_q = rmp->max_priority;
+    else{
+	    if (new_q >= NR_SCHED_QUEUES) {
+			return EINVAL;
+		}
+		old_q     = rmp->priority;
+		old_max_q = rmp->max_priority;
 
 	/* Update the proc entry and reschedule the process */
 	rmp->max_priority = rmp->priority = new_q;
+}
 
 	if ((rv = schedule_process_local(rmp)) != OK) {
 		/* Something went wrong when rescheduling the process, roll
 		 * back the changes to proc struct */
 		rmp->priority     = old_q;
 		rmp->max_priority = old_max_q;
-	}
-
+	
+}
 	return rv;
 }
 
@@ -354,7 +401,7 @@ static void balance_queues(struct timer *tp)
 	int proc_nr;
 
 	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
-		if (rmp->flags & IN_USE) {
+		if ((rmp->flags & IN_USE) && is_system_proc(rmp)) {
 			if (rmp->priority > rmp->max_priority) {
 				rmp->priority -= 1; /* increase priority */
 				schedule_process_local(rmp);
@@ -363,4 +410,39 @@ static void balance_queues(struct timer *tp)
 	}
 
 	set_timer(&sched_timer, balance_timeout, balance_queues, 0);
+}
+
+
+/*===========================================================================*
+ *				start_scheduling			     *
+ *==================================================== =======================*/
+
+int do_lottery()
+{
+	int rv;
+	int proc_nr;
+	int num_tickets = 0;
+
+	struct schedproc *rmp;
+	int winningNum = random() % totalTickets - 1;
+
+	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
+		if (rmp->flags & IN_USE && is_user_proc(rmp)){
+			winningNum -= rmp->tickets;
+			if(winningNum <= 0){
+				int pre = rmp->priority;
+				rmp->priority = MAX_USER_Q;
+				if(pre != MAX_USER_Q){
+					rv = schedule_process_local(rmp);
+				}
+				else{
+					rv = OK;
+				}			
+				
+				break;
+			}
+		}
+	}
+	return rv;
+
 }

@@ -1,0 +1,11 @@
+Lottery Scheduler:
+
+	-The first thing we did was intialize the niceness values (number of tickets) to 5. 
+
+	-We then altered pm/schedule.c to handle both system processes and user processses where we pass the nice value directly to sched.
+
+	-In sched there are several points where we have to attend to a process's ticket count. In do_nice(), the ticket count is updated according to the new nice value, and then totalTickets is updated to reflect this change. In do_start_scheduling the ticket count is intiialized to 5 for each process and the totalTickets count is increased by 5. In do_stop_scheduling, subtract the process's ticket count from totalTickets.
+
+	-do_lottery() is called in several places and implements the actual lottery scheduling, placing each winner in the maximum priority user queue.
+
+	

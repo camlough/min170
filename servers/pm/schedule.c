@@ -14,6 +14,8 @@
 #include <timers.h>
 #include "kernel/proc.h"
 
+#define is_user_proc(p)	((p)->mp_parent != RS_PROC_NR)
+
 /*===========================================================================*
  *				init_scheduling				     *
  *===========================================================================*/
@@ -59,9 +61,15 @@ int sched_start_user(endpoint_t ep, struct mproc *rmp)
 	int rv;
 
 	/* convert nice to priority */
-	if ((rv = nice_to_priority(rmp->mp_nice, &maxprio)) != OK) {
+    if(is_user_proc(rmp)){
+		// maxprio = rmp->mp_nice;
+		maxprio = MAX_USER_Q;
+	}
+
+	else if ((rv = nice_to_priority(rmp->mp_nice, &maxprio)) != OK) {
 		return rv;
 	}
+
 	
 	/* scheduler must know the parent, which is not the case for a child
 	 * of a system process created by a regular fork; in this case the 
@@ -91,14 +99,19 @@ int sched_nice(struct mproc *rmp, int nice)
 	int rv;
 	message m;
 	unsigned maxprio;
-
 	/* If the kernel is the scheduler, we don't allow messing with the
 	 * priority. If you want to control process priority, assign the process
 	 * to a user-space scheduler */
 	if (rmp->mp_scheduler == KERNEL || rmp->mp_scheduler == NONE)
 		return (EINVAL);
 
-	if ((rv = nice_to_priority(nice, &maxprio)) != OK) {
+
+	if(is_user_proc(rmp)){
+		maxprio = nice;
+	}
+    
+
+	else if ((rv = nice_to_priority(nice, &maxprio)) != OK) {
 		return rv;
 	}
 

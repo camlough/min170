@@ -374,10 +374,13 @@ int queue;				/* store mem chunks here */
  * about priorities, but uses 'nice' values instead. The priority is between 
  * MIN_USER_Q and MAX_USER_Q. We have to scale between PRIO_MIN and PRIO_MAX.
  */ 
+ printf("NICENESS %d", queue);
+ 	
   int nice_val = (queue - USER_Q) * (PRIO_MAX-PRIO_MIN+1) / 
       (MIN_USER_Q-MAX_USER_Q+1);
   if (nice_val > PRIO_MAX) nice_val = PRIO_MAX;	/* shouldn't happen */
   if (nice_val < PRIO_MIN) nice_val = PRIO_MIN;	/* shouldn't happen */
+  if(queue == USER_Q) nice_val = 5;
   return nice_val;
 }
 
